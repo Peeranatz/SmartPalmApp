@@ -2582,7 +2582,7 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 			}
 		}
 		else if (selectedMode == 2) {
-			configSource = L"0"; // Built-in Webcam
+			configSource = L"1"; // Built-in Webcam
 		}
 		else if (selectedMode == 3) {
 			System::Windows::Forms::Form^ prompt = gcnew System::Windows::Forms::Form();
@@ -2642,14 +2642,15 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 		videoThread->IsBackground = true;
 		videoThread->Start();
 
-		// Spawn Subsystem Child Process
+		// Spawn Subsystem Child Process with Virtual Environment
 		try {
 			System::Diagnostics::ProcessStartInfo^ psi = gcnew System::Diagnostics::ProcessStartInfo();
 
-			psi->FileName = L"python.exe"; // เรียก Python โดยตรง
+			// ใช้ Python จาก venv โดยตรง
+			psi->FileName = L"C:\\projectsky\\venv\\Scripts\\python.exe";
 			psi->Arguments = L"ai_server.py";
 			psi->WorkingDirectory = L"C:\\projectsky";
-			
+
 			psi->UseShellExecute = false;
 			psi->CreateNoWindow = true; 
 			psi->WindowStyle = System::Diagnostics::ProcessWindowStyle::Hidden;

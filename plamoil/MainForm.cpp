@@ -10,7 +10,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
     Application::EnableVisualStyles();
     Application::SetCompatibleTextRenderingDefault(false);
 
-    try {
+    try { 
         plamoil::MainForm form;
         Application::Run(% form);
     }

@@ -58,7 +58,7 @@ bool RunYOLOv8_AI(const std::string& imagePath, const std::string& modelPath, cv
     Mat blob;
     blobFromImage(letterboxImg, blob, 1.0 / 255.0, Size(640, 640), Scalar(), true, false);
     net.setInput(blob);
-
+     
     vector<Mat> outputs;
     net.forward(outputs, net.getUnconnectedOutLayersNames());
 

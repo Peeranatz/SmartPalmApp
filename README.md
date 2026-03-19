@@ -11,6 +11,7 @@
 เนื่องจากโมเดล AI มีขนาดใหญ่มาก (13MB - 100MB+) GitHub จึงไม่อนุญาตให้อัปโหลด คุณจำเป็นต้องดาวน์โหลดโมเดลมาใส่ด้วยตัวเองก่อนรันโปรแกรม
 
 1. **โคลนโปรเจคนี้ลงเครื่องคอมพิวเตอร์ของคุณ:**
+
    ```bash
    git clone https://github.com/Peeranatz/SmartPalmApp.git
    cd SmartPalmApp
@@ -18,7 +19,7 @@
 
 2. **ดาวน์โหลดโมเดล AI (ไฟล์ ONNX):**
    - ดาวน์โหลดไฟล์โมเดลชื่อ `Finalmak2Model.onnx` จากลิงก์นี้: 👉 **[รอใส่ลิงก์ Google Drive ดาวน์โหลดโมเดล]**
-   - นำไฟล์ที่โหลดเสร็จ ไปวางไว้ที่โฟลเดอร์ `C:\projectsky\` 
+   - นำไฟล์ที่โหลดเสร็จ ไปวางไว้ที่โฟลเดอร์ `C:\projectsky\`
    - *(ถ้าจะวางที่อื่น ต้องไปแก้ที่อยู่พาทในไฟล์ `plamoil/ai_server.py` บรรทัด `ONNX_PATH = r"..."` ให้ตรงกับพาทที่คุณวางไฟล์)*
 
 ---
@@ -28,12 +29,13 @@
 เครื่องคอมพิวเตอร์ที่จะรันโปรแกรมนี้ได้ ต้องติดตั้ง Python 3.9 หรือใหม่กว่าก่อน
 
 1. **ติดตั้งไลบรารีที่จำเป็นสำหรับ AI (แนะนำให้เปิด Command Prompt แล้วรัน):**
+
    ```bash
    pip install ultralytics opencv-python onnxruntime numpy
    ```
 
 2. **ระบบ Auto-Launch (อ่านเพื่อความเข้าใจ):**
-   คุณ **ไม่ต้อง** กดรัน `ai_server.py` ด้วยตัวเอง! 
+   คุณ **ไม่ต้อง** กดรัน `ai_server.py` ด้วยตัวเอง!
    เมื่อคุณเปิดโปรแกรมหน้าบ้าน C++ ขึ้นมา แล้วกดเลือกกล้องและกดปุ่ม **"Start Video"** โค้ดฝั่ง C++ จะทำการสั่งรันไฟล์ `ai_server.py` ขึ้นมาทำงานเป็นเบื้องหลังให้อัตโนมัติ (และจะปิดตัวเองทิ้งทันทีเมื่อคุณกดปิดโปรแกรม C++)
 
 ---
@@ -43,31 +45,37 @@
 เนื่องจากโปรแกรมนี้ใช้ภาษา C++/CLI ซึ่งต้องมีการเชื่อมต่อกับไลบรารีภายนอก (OpenCV) ขั้นตอนนี้จึงสำคัญมาก ถ้าตั้งค่าพลาด โปรแกรมจะ Build ไม่ผ่านหรือเปิดไม่ขึ้นจอแดงครับ!
 
 ### 🔧 3.1 สิ่งที่ต้องมีใน Visual Studio Installer
+
 โปรดเช็คใน Visual Studio Installer ว่าคุณติดตั้ง 2 กล่องนี้ติ๊กถูกแล้ว:
+
 - [x] Desktop development with C++
 - [x] (สำคัญ) ไปที่ฝั่งขวา Individual Components ค้นหาคำว่า `C++/CLI` แล้วติ๊กถูกติดตั้งด้วย (เช่น *C++/CLI support for v143 build tools*)
 
 ### 🔧 3.2 การติดตั้ง OpenCV (Library จัดการภาพของ C++)
-1. โหลด OpenCV (เวอร์ชันที่เข้ากันได้กับโปรเจคนี้คือ **4.1.2** หรือใกล้เคียง) 
+
+1. โหลด OpenCV (เวอร์ชันที่เข้ากันได้กับโปรเจคนี้คือ **4.1.2** หรือใกล้เคียง)
 2. แตกไฟล์นำไปวางไว้ที่ `C:\opencv`
 
 ### 🔧 3.3 การตั้งค่าโปรเจค C++ (Project Properties)
+
 1. ดับเบิลคลิกไฟล์ **`plamoil.sln`** เพื่อเปิดโปรเจคใน Visual Studio
 2. มองหาแทบเมนูด้านบน เปลี่ยนจาก x86 เป็น **`x64`** (OpenCV ทำงานบน x64 เท่านั้น)
 3. ไปที่หน้าต่าง Solution Explorer (ขวามือ) -> คลิกขวาที่ชื่อโปรเจค `plamoil` -> เลือก **Properties**
 4. ตั้งค่าตามนี้เป๊ะๆ (สังเกตขอบบนต้องเลือก Platform: x64 และ Configuration: All Configurations):
 
-   - **C/C++ -> General -> Additional Include Directories:** 
+   - **C/C++ -> General -> Additional Include Directories:**
      เพิ่มที่อยู่ `C:\opencv\build\include`
 
-   - **Linker -> General -> Additional Library Directories:** 
+   - **Linker -> General -> Additional Library Directories:**
      เพิ่มที่อยู่ `C:\opencv\build\x64\vc15\lib` (หรือ vc14 ขึ้นอยู่กับเวอร์ชันดึงข้อมูล)
 
-   - **Linker -> Input -> Additional Dependencies:** 
+   - **Linker -> Input -> Additional Dependencies:**
      ใส่ชื่อไฟล์ไลบรารีลงไป `opencv_world4120.lib` (เลข 4120 เปลี่ยนตามเวอร์ชัน OpenCV ที่คุณลง)
 
 ### 🔧 3.4 ขาดไม่ได้! การแก้ปัญหา "DLL Not Found"
+
 ถ้าคุณตั้งค่าทุกอย่างเสร็จ กดรัน (F5) แล้วโปรแกรมเด้งหน้าต่าง Error ว่าหาไฟล์ `.dll` ไม่เจอ ให้ทำตามนี้:
+
 1. เข้าไปที่โฟลเดอร์ `C:\opencv\build\x64\vc15\bin`
 2. ก๊อปปี้ไฟล์ **`opencv_world4120.dll`** และไฟล์ **`opencv_videoio_ffmpeg4120_64.dll`** (ถ้ามี)
 3. นำไฟล์ DLL ที่ก๊อปปี้มา ไปวางแปะไว้ในตะกร้าโฟลเดอร์ `x64/Debug/` หรือ `x64/Release/` ของโปรเจค `plamoil` ของเรา (วางไว้ชั้นตื้นๆ คู่กับไฟล์ plamoil.exe ที่โปรแกรมสร้างขึ้นมา)

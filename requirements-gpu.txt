@@ -1,0 +1,17 @@
+# Python packages for ai_server.py - NVIDIA GPU version (tested 2026-11 on RTX 4050 Laptop, driver 610.88, Python 3.13.14)
+#
+# Install (inside C:\projectsky):
+#   python -m venv venv
+#   venv\Scripts\python.exe -m pip install -r requirements-gpu.txt
+#
+# IMPORTANT: torch and onnxruntime-gpu must be built for the SAME CUDA major version (here CUDA 13).
+# A mismatch (e.g. torch +cu128 with onnxruntime-gpu for CUDA 13) makes ai_server.py hang while
+# loading CUDA DLLs when it is started (hidden) by the C++ app.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.14.1+cu130
+torchvision==0.29.1+cu130
+onnxruntime-gpu[cuda,cudnn]==1.32.0
+ultralytics==8.4.216
+lap==0.5.14
+opencv-python==5.1.0.95
+numpy==2.5.4

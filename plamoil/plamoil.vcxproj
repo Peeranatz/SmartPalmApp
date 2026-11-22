@@ -87,6 +87,11 @@
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>C:\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /y /d "C:\opencv\build\x64\vc16\bin\opencv_world4120d.dll" "$(OutDir)" &gt;nul
+xcopy /y /d "C:\opencv\build\x64\vc16\bin\opencv_videoio_ffmpeg4120_64.dll" "$(OutDir)" &gt;nul</Command>
+      <Message>Copy OpenCV runtime DLLs next to plamoil.exe</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -121,10 +126,15 @@
       <AdditionalIncludeDirectories>C:\opencv\build\include;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opencv_world4120d.lib</AdditionalDependencies>
+      <AdditionalDependencies>opencv_world4120.lib</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>C:\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /y /d "C:\opencv\build\x64\vc16\bin\opencv_world4120.dll" "$(OutDir)" &gt;nul
+xcopy /y /d "C:\opencv\build\x64\vc16\bin\opencv_videoio_ffmpeg4120_64.dll" "$(OutDir)" &gt;nul</Command>
+      <Message>Copy OpenCV runtime DLLs next to plamoil.exe</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ResourceCompile Include="app.rc" />

@@ -1,9 +1,42 @@
 # C:\projectsky\ai_server.py - Fixed Version with BoTSORT & Lock Class Tracking
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# ตั้ง SMARTPALM_FORCE_CPU=1 ถ้าต้องการบังคับใช้ CPU (เช่น เครื่องที่ไม่มีการ์ดจอ NVIDIA หรือไดรเวอร์มีปัญหา)
+FORCE_CPU = os.environ.get("SMARTPALM_FORCE_CPU") == "1"
 
 import sys
+
+# โปรแกรม C++ เปิดไฟล์นี้แบบซ่อนหน้าต่าง จึงมองไม่เห็นข้อความ/error -> เขียนทุกข้อความลงไฟล์ log ด้วย
+# (ต้องทำก่อน import ultralytics เพราะ logger ของมันจับ sys.stdout ไว้ตอน import)
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_server_log.txt")
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = [s for s in streams if s is not None]
+    def write(self, text):
+        for s in self.streams:
+            try:
+                s.write(text); s.flush()
+            except Exception:
+                pass
+    def flush(self):
+        for s in self.streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+    def isatty(self):
+        return False
+
+try:
+    _log = open(LOG_FILE, "w", encoding="utf-8")
+    sys.stdout = _Tee(sys.__stdout__, _log)
+    sys.stderr = _Tee(sys.__stderr__, _log)
+    import time as _time
+    print(f"=== ai_server start {_time.strftime('%Y-%m-%d %H:%M:%S')} | python {sys.executable}")
+except Exception:
+    pass
+
 import cv2
 import socket
 import struct
@@ -33,7 +66,55 @@ ENGINE_PATH = r"C:\projectsky\Final300.engine"
 MODEL_PATH  = ENGINE_PATH if os.path.exists(ENGINE_PATH) else ONNX_PATH
 print(f"📦 โหลดโมเดล: {os.path.basename(MODEL_PATH)}")
 model = YOLO(MODEL_PATH, task="segment")
-print("✅ โมเดลพร้อม")
+
+# ใช้การ์ดจอ NVIDIA ถ้ามี (ต้องใช้ venv ที่ลง torch รุ่น CUDA + onnxruntime-gpu) ไม่มีก็ใช้ CPU
+def _pick_device():
+    if FORCE_CPU:
+        return "cpu"
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            try:
+                import onnxruntime
+                onnxruntime.preload_dlls()  # โหลด CUDA/cuDNN ที่มากับ pip (ไม่ต้องลง CUDA Toolkit แยก)
+            except Exception:
+                pass
+            return 0
+    except Exception:
+        pass
+    return "cpu"
+
+DEVICE = _pick_device()
+
+def _warm_up(dev):
+    # ใช้ model.track ด้วยค่าเดียวกับตอนทำงานจริง โมเดลจะได้ไม่ถูกโหลดซ้ำตอนเฟรมแรก
+    # (ภาพดำ -> ไม่มีวัตถุ -> ไม่สร้าง track ใดๆ ไม่กระทบยอดนับ)
+    model.track(np.zeros((480, 640, 3), np.uint8), imgsz=640, device=dev, tracker="botsort.yaml",
+                persist=True, conf=0.4, iou=0.5, verbose=False)
+
+# อุ่นเครื่อง: รันโมเดล 1 ครั้งก่อนต่อกับ C++ (ครั้งแรกช้าเพราะต้องเตรียม GPU/หน่วยความจำ)
+# ถ้า GPU มีปัญหา ให้ถอยไปใช้ CPU เอง แทนที่จะล้มกลางเดโม
+_t = time.time()
+try:
+    _warm_up(DEVICE)
+except Exception as e:
+    if DEVICE == "cpu":
+        raise
+    print(f"⚠️ ใช้ GPU ไม่ได้ ({e}) -> เปลี่ยนไปใช้ CPU")
+    DEVICE = "cpu"
+    model.predictor = None
+    _warm_up(DEVICE)
+_dev_name = "CPU"
+if DEVICE != "cpu":
+    import torch
+    _dev_name = "GPU " + torch.cuda.get_device_name(0)
+    try:  # onnxruntime ถอยไปใช้ CPU เงียบๆ ได้ถ้าโหลด CUDA ไม่สำเร็จ -> เช็กให้เห็นใน log
+        _providers = model.predictor.model.session.get_providers()
+        if "CUDAExecutionProvider" not in _providers:
+            _dev_name += f" (แต่ onnxruntime ใช้ {_providers[0]} แทน!)"
+    except Exception:
+        pass
+print(f"✅ โมเดลพร้อม (device={_dev_name}, warm-up {time.time() - _t:.1f}s)")
 
 camera_config_file  = r"C:\projectsky\camera_source.txt"
 display_config_file = r"C:\projectsky\display_config.txt"
@@ -59,46 +140,58 @@ last_cfg_mtime = 0
 frame_counter = 0
 
 # ⚡ Track Manager (แก้ปัญหานับขึ้นลง ล็อคคลาส และเก็บยอดสะสมถาวร)
+# กติกานับ: ทะลายต้องถูกเห็น "ต่อเนื่อง" อย่างน้อย DWELL_SECONDS วินาที จึงจะถูกนับ (+1 ครั้งเดียวต่อ track ID)
+#   - ตัวที่โผล่แวบเดียว / ตรวจจับผิดชั่วคราว จะไม่ถูกนับ
+#   - วัดเป็น "วินาที" ไม่ใช่จำนวนเฟรม ผลจึงไม่ขึ้นกับความเร็วเครื่อง/FPS
+#     (ไฟล์วิดีโอใช้เวลาในวิดีโอ, กล้องสดใช้เวลาจริง)
+#   - หายไปไม่เกิน GAP_SECONDS (เช่น ถูกบังชั่วครู่) ยังนับว่าต่อเนื่อง
+# ค่า 1.0 วินาทีมาจากการทดสอบกับคลิปจริง: เดิม (5 เฟรม) นับเกินจริง 2.5-4 เท่าในคลิปที่เดินถ่ายรอบกอง,
+# 1.0 วินาทีได้ใกล้ยอดจริงที่สุด, 1.5 วินาทีขึ้นไปเริ่มนับขาด
+DWELL_SECONDS = 1.0
+GAP_SECONDS = 0.3
+
 class TrackManager:
-    def __init__(self, history_size=5):
-        self.track_history = defaultdict(list)
-        self.locked_tracks = {}  # {track_id: final_class}
-        self.total_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0} # ยอดสะสมรวม ไม่มีวันลด
-        self.history_size = history_size
-    
-    def update_and_get_class(self, track_id, cls):
+    def __init__(self, dwell_s=DWELL_SECONDS, gap_s=GAP_SECONDS):
+        self.dwell_s, self.gap_s = dwell_s, gap_s
+        self.first_seen = {}                 # {track_id: เวลาที่เริ่มเห็นต่อเนื่องรอบนี้}
+        self.last_seen = {}                  # {track_id: เวลาที่เห็นล่าสุด}
+        self.votes = defaultdict(list)       # {track_id: [class ที่ทายในแต่ละเฟรม]}
+        self.locked_tracks = {}              # {track_id: final_class}
+        self.total_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}  # ยอดสะสมรวม ไม่มีวันลด
+
+    def update_and_get_class(self, track_id, cls, now):
         # 1. ถ้า ID นี้ถูกล็อคคลาสและบวกยอดไปแล้ว ให้คืนค่าคลาสเดิมตลอดกาล (กันคลาสกระโดด)
         if track_id in self.locked_tracks:
             return self.locked_tracks[track_id]
-        
-        # 2. เก็บประวัติคลาสของเฟรมปัจจุบัน
-        self.track_history[track_id].append(cls)
-        
-        # 3. ถ้าเจอ ID นี้ติดต่อกันครบจำนวนที่กำหนด -> ฟันธง
-        if len(self.track_history[track_id]) >= self.history_size:
-            counter = Counter(self.track_history[track_id])
-            stable_cls = counter.most_common(1)[0][0]
-            
-            # ล็อคคลาส และ บวกยอดสะสม (+1 แค่ครั้งเดียวต่อ 1 Track ID)
+
+        # 2. หายไปนานเกิน -> เริ่มจับเวลาใหม่
+        last = self.last_seen.get(track_id)
+        if last is None or now - last > self.gap_s:
+            self.first_seen[track_id] = now
+            self.votes[track_id] = []
+        self.last_seen[track_id] = now
+        self.votes[track_id].append(cls)
+        stable_cls = Counter(self.votes[track_id]).most_common(1)[0][0]  # โหวตตลอดช่วงที่เห็น
+
+        # 3. อยู่ครบเวลา -> ฟันธง ล็อคคลาส และบวกยอดสะสม (+1 แค่ครั้งเดียวต่อ 1 Track ID)
+        if now - self.first_seen[track_id] >= self.dwell_s - 1e-6:
             self.locked_tracks[track_id] = stable_cls
             self.total_counts[stable_cls] += 1
-            
-            # ลบประวัติชั่วคราวทิ้งได้เลย
-            del self.track_history[track_id]
-            return stable_cls
-        
-        # 4. ถ้าเพิ่งโผล่มา (ยังไม่ครบเกณฑ์) ให้โหวตจากข้อมูลที่มีไปก่อน แต่ "ยังไม่บวกยอด"
-        counter = Counter(self.track_history[track_id])
-        return counter.most_common(1)[0][0]
+            self._forget(track_id)
 
-    def cleanup_old_tracks(self, active_track_ids):
-        # ลบประวัติเฉพาะตัวที่ยังไม่ทันล็อคคลาสแล้วหลุดจอไปก่อน
-        old_ids = set(self.track_history.keys()) - set(active_track_ids)
-        for tid in old_ids:
-            del self.track_history[tid]
+        # 4. ยังไม่ครบเวลา: แสดงคลาสจากการโหวตไปก่อน แต่ "ยังไม่บวกยอด"
+        return stable_cls
+
+    def cleanup_old_tracks(self, now):
+        # ลบประวัติของตัวที่ยังไม่ทันถูกนับแล้วหายไปนานเกิน GAP_SECONDS
+        for tid in [t for t, last in self.last_seen.items() if now - last > self.gap_s]:
+            self._forget(tid)
+
+    def _forget(self, tid):
+        self.first_seen.pop(tid, None); self.last_seen.pop(tid, None); self.votes.pop(tid, None)
 
 # สร้าง Track Manager ตัวเดียวใช้ตลอดทั้งโปรแกรม
-track_manager = TrackManager(history_size=5)
+track_manager = TrackManager()
 
 def refresh_display_config():
     global show_box, show_mask, last_cfg_mtime
@@ -115,7 +208,8 @@ def refresh_display_config():
     except Exception:
         pass
 
-def process_and_send(frame):
+def process_and_send(frame, now):
+    # now = เวลาของเฟรมนี้ (วินาที): ไฟล์วิดีโอ = เวลาในวิดีโอ, กล้องสด = เวลาจริง
     refresh_display_config()
     global frame_counter
 
@@ -123,7 +217,7 @@ def process_and_send(frame):
         frame, 
         verbose=False, 
         imgsz=640, 
-        device="cpu",
+        device=DEVICE,
         tracker="botsort.yaml",
         persist=True,
         conf=0.4,
@@ -148,7 +242,7 @@ def process_and_send(frame):
             if track_id != -1:
                 active_track_ids.append(track_id)
                 # จัดการการล็อคคลาสและนับยอดสะสม
-                stable_cls = track_manager.update_and_get_class(track_id, c)
+                stable_cls = track_manager.update_and_get_class(track_id, c, now)
             else:
                 stable_cls = c
 
@@ -167,7 +261,7 @@ def process_and_send(frame):
             str_lines.append(f"{track_id};{stable_cls};{conf:.2f};{x1},{y1},{x2},{y2};{pts_str}")
 
     # ทำความสะอาด ID เก่าที่หลุดเฟรมไป (ไม่กระทบยอด Total)
-    track_manager.cleanup_old_tracks(active_track_ids)
+    track_manager.cleanup_old_tracks(now)
 
     # ⚡⚡⚡ ดึงยอดสะสมรวม (Cumulative) ที่บวกไว้แบบถาวร ⚡⚡⚡
     tc = track_manager.total_counts
@@ -179,7 +273,8 @@ def process_and_send(frame):
     img_bytes = buf.tobytes()
 
     frame_counter += 1
-    if frame_counter % 10 == 0:
+    # ส่งภาพดิบทุก 10 เฟรม (เริ่มที่เฟรมแรก) ฝั่ง C++ จะเก็บกรอบของ "เฟรมเดียวกัน" คู่กับภาพดิบนี้ไว้บันทึกประวัติ
+    if frame_counter % 10 == 1:
         _, buf_raw = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
         raw_bytes = buf_raw.tobytes()
     else:
@@ -199,41 +294,58 @@ def process_and_send(frame):
 
 
 class VirtualWebcam:
+    """แหล่งภาพ 2 แบบ
+    - กล้องสด (webcam / IP / stream): อ่านใน thread แยก เก็บแค่เฟรมล่าสุด (ภาพไม่ดีเลย์)
+    - ไฟล์วิดีโอ: อ่านตามลำดับแบบ "ข้ามเฟรมตายตัว" ให้เหลือ ~VIDEO_PROCESS_FPS เฟรม/วินาทีของวิดีโอ
+      เดิมข้ามเฟรมตามความเร็วเครื่อง ยอดนับจึงเปลี่ยนไปตามเครื่อง/ทุกครั้งที่รัน ตอนนี้ได้ผลเท่ากันทุกครั้ง
+      (ถ้าเครื่องช้ากว่านี้ วิดีโอจะเล่นช้าลงแต่ยอดนับไม่เปลี่ยน)
+    """
+    VIDEO_PROCESS_FPS = 10  # ใกล้กับความเร็ว CPU เดิม (~11 fps) ที่ทีมใช้ทดสอบระบบนับ
+    LIVE_PREFIXES = ("http://", "https://", "rtsp://", "rtmp://", "udp://", "tcp://")
+
     def __init__(self, src):
         self.src  = src
-        self.is_video = isinstance(src, str) and not src.startswith("http")
+        self.is_video = isinstance(src, str) and not src.lower().startswith(self.LIVE_PREFIXES)
         self.cap = cv2.VideoCapture(src)
-        if not self.is_video:
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.delay = 1.0 / (fps if 1 < fps < 120 else 30)
-
         self.latest  = None
-        self.running = True
-        threading.Thread(target=self._loop, daemon=True).start()
+        self.timestamp = 0.0
+        self.running = self.cap.isOpened()
+        if not self.running:
+            print(f"❌ เปิดแหล่งภาพไม่ได้: {src}")
+            return
 
-    def _loop(self):
+        if self.is_video:
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            fps = fps if 1 < fps < 240 else 30
+            self.step = max(1, round(fps / self.VIDEO_PROCESS_FPS))
+            print(f"🎞️ ไฟล์วิดีโอ {fps:.0f} fps -> ประมวลผลทุก {self.step} เฟรม")
+        else:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):  # กล้องสดเท่านั้น
         while self.running and self.cap.isOpened():
-            t0  = time.time()
             ret = self.cap.grab()
             if not ret:
-                if self.is_video:
-                    self.running = False
-                else:
-                    time.sleep(0.01)
+                time.sleep(0.01)
                 continue
 
             ok, frame = self.cap.retrieve()
             if ok:
                 self.latest = frame
 
-            if self.is_video:
-                wait = self.delay - (time.time() - t0)
-                if wait > 0:
-                    time.sleep(wait)
-
     def read(self):
+        if self.is_video:
+            for _ in range(self.step - 1):  # ข้ามเฟรมแบบไม่ถอดรหัสภาพ (เร็ว)
+                if not self.cap.grab():
+                    break
+            ok, frame = self.cap.read()
+            if not ok:
+                self.running = False  # วิดีโอจบ
+                return False, None
+            self.timestamp = self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # เวลาในวิดีโอ
+            return True, frame
+        self.timestamp = time.monotonic()
         if self.latest is not None:
             f = self.latest
             self.latest = None
@@ -245,15 +357,23 @@ class VirtualWebcam:
         self.cap.release()
 
 if __name__ == '__main__':
+    # รอ C++ เปิดพอร์ตแบบไม่กิน CPU และเลิกรอเองถ้านานเกิน (กัน Process ผีค้างเมื่อปิดโปรแกรม C++ ไปก่อน)
+    CONNECT_TIMEOUT_S = 30
     print("⏳ รอเชื่อมต่อ C++...")
+    deadline = time.time() + CONNECT_TIMEOUT_S
     while True:
         try:
             client_socket.connect(('127.0.0.1', 8888))
             print("✅ เชื่อมต่อสำเร็จ!")
             break
-        except ConnectionRefusedError:
-            pass
-            
+        except OSError:
+            client_socket.close()
+            if time.time() > deadline:
+                print(f"❌ ไม่มี C++ รอรับที่พอร์ต 8888 ภายใน {CONNECT_TIMEOUT_S} วินาที -> ปิดตัวเอง")
+                sys.exit(1)
+            time.sleep(0.2)
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
     try:
         cam = VirtualWebcam(camera_source)
         time.sleep(1)
@@ -265,8 +385,15 @@ if __name__ == '__main__':
                 time.sleep(0.005)
                 continue
 
+            # ตั้งใจ "บีบ" เป็น 640x480 ตามเดิม: ทดสอบแล้วว่าถ้าคงสัดส่วนภาพ (เช่น วิดีโอแนวตั้ง)
+            # โมเดลนี้แยกคลาสเพี้ยน (ทะลายสุกกลายเป็น unripe/underripe) - น่าจะเพราะชุดฝึกถูกยืดภาพมา
             frame = cv2.resize(frame, (640, 480))
-            process_and_send(frame)
+            process_and_send(frame, cam.timestamp)
+            if frame_counter == 1:
+                _t_first = time.time()
+            elif frame_counter % 100 == 0:
+                print(f"… {frame_counter} เฟรม, {99 / (time.time() - _t_first):.1f} fps")
+                _t_first = time.time()
 
         cam.release()
     except Exception as e:
@@ -276,4 +403,7 @@ if __name__ == '__main__':
     finally:
         time.sleep(1.5)
         client_socket.close()
+        tc = track_manager.total_counts
+        print(f"📊 ประมวลผล {frame_counter} เฟรม | ยอดสะสม ripe={tc[2]} underripe={tc[4]} overripe={tc[1]} "
+              f"unripe={tc[5]} empty={tc[0]} rotten={tc[3]}")
         print("ปิดระบบเรียบร้อย")

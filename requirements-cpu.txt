@@ -1,0 +1,13 @@
+# Python packages for ai_server.py - CPU only (no NVIDIA GPU). Tested 2026-11 with Python 3.13.14.
+#
+# Install (inside C:\projectsky):
+#   python -m venv venv
+#   venv\Scripts\python.exe -m pip install -r requirements-cpu.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+torchvision==0.29.2+cpu
+onnxruntime==1.32.0
+ultralytics==8.4.216
+lap==0.5.14
+opencv-python==5.1.0.95
+numpy==2.5.4

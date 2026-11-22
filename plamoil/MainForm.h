@@ -2365,13 +2365,14 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 		latestAiData = data;
 
 		// ⚡ 4. ป้องกันบั๊กรูป Raw เป็น Null (ดักไว้ว่าถ้า Python ไม่ได้ส่งมา ให้เก็บรูปเดิมไว้ อย่าลบทิ้ง)
+		// Python sends a raw frame only every few frames, but boxes every frame. The saved
+		// history record is (raw frame + boxes), so only take the boxes that belong to the
+		// same frame as the raw image - otherwise the boxes are drawn on the wrong picture.
+		// An empty box list is valid too (nothing detected in that frame).
 		if (rawFrame != nullptr) {
 			if (currentRawVideoFrame != nullptr) delete currentRawVideoFrame;
 			currentRawVideoFrame = rawFrame;
-		}
-
-		if (jsonBoxData != nullptr && jsonBoxData != L"") {
-			currentBoxData = jsonBoxData;
+			currentBoxData = (jsonBoxData != nullptr) ? jsonBoxData : L"";
 		}
 
 		System::Drawing::Graphics^ g = System::Drawing::Graphics::FromImage(picUploadAreaNew->Image);
@@ -2483,13 +2484,21 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 					reader->Close();
 					stream->Close();
 					client->Close();
+
+					// Python closed the stream on its own (video file finished / Python exited):
+					// reset the buttons instead of leaving the UI stuck in "running" state.
+					if (isVideoRunning) {
+						this->BeginInvoke(gcnew System::Windows::Forms::MethodInvoker(this, &MainForm::OnPythonStreamEnded));
+						break;
+					}
 				}
 				Thread::Sleep(10);
 			}
-			videoListener->Stop();
+			try { videoListener->Stop(); } catch (System::Exception^) {}
 		}
 		catch (System::Exception^ ex) {
-			MessageBox::Show(L"เกิดข้อผิดพลาดเบื้องหลังกับท่อ C++ (พอร์ตอาจจะถูก Process ผีสิงจับไว้):\n" + ex->Message, L"Socket Server Error", MessageBoxButtons::OK, MessageBoxIcon::Error);
+			// Stopping the listener from the UI thread can interrupt Pending(); that is not an error.
+			if (isVideoRunning) MessageBox::Show(L"เกิดข้อผิดพลาดเบื้องหลังกับท่อ C++ (พอร์ตอาจจะถูก Process ผีสิงจับไว้):\n" + ex->Message, L"Socket Server Error", MessageBoxButtons::OK, MessageBoxIcon::Error);
 		}
 		catch (...) {}
 	}
@@ -2582,7 +2591,7 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 			}
 		}
 		else if (selectedMode == 2) {
-			configSource = L"1"; // Built-in Webcam
+			configSource = L"0"; // Built-in Webcam (index 0 on this laptop: HP Wide Vision HD)
 		}
 		else if (selectedMode == 3) {
 			System::Windows::Forms::Form^ prompt = gcnew System::Windows::Forms::Form();
@@ -2663,20 +2672,41 @@ private: System::Void btnDownloadSlip_Click(System::Object^ sender, System::Even
 	}
 	// Action Listener for teardown logic
 	private: System::Void btnStopVideo_Click(System::Object^ sender, System::EventArgs^ e) {
+		StopVideoPipeline();
+	}
+
+	// Stops the socket listener, kills the Python AI process and unlocks the UI.
+	// Safe to call more than once (Stop button, end of video, closing the window).
+	private: void StopVideoPipeline() {
 		isVideoRunning = false;
 		if (videoListener != nullptr) {
-			videoListener->Stop();
+			try { videoListener->Stop(); } catch (System::Exception^) {}
 		}
 
 		// Re-secure and close out terminal handle logic properly
-		if (pythonProcess != nullptr && !pythonProcess->HasExited) {
-			pythonProcess->Kill();
+		if (pythonProcess != nullptr) {
+			try {
+				if (!pythonProcess->HasExited) pythonProcess->Kill();
+			}
+			catch (System::Exception^) {} // already exited between the check and Kill()
 			pythonProcess = nullptr;
 		}
 
 		btnStartVideo->Enabled = true;
 		btnStopVideo->Enabled = false;
 		cmbCameraSource->Enabled = true;
+	}
+
+	// Called (on the UI thread) when Python closes the stream by itself, e.g. the video file ended.
+	private: void OnPythonStreamEnded() {
+		if (!isVideoRunning) return; // user already pressed Stop
+		StopVideoPipeline();
+	}
+
+	// Never leave a hidden Python process running after the window is closed.
+	protected: virtual void OnFormClosing(System::Windows::Forms::FormClosingEventArgs^ e) override {
+		StopVideoPipeline();
+		System::Windows::Forms::Form::OnFormClosing(e);
 	}
 private: System::Void btnApplyResult_Click(System::Object^ sender, System::EventArgs^ e) {
 	if (System::String::IsNullOrEmpty(latestAiData)) {
